@@ -2,105 +2,126 @@
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Rendering;
-public class CameraRenderer 
+/// <summary>
+/// 相机渲染管理类：单独控制每个相机的渲染
+/// </summary>
+public partial class CameraRenderer
 {
+
     ScriptableRenderContext context;
+
     Camera camera;
 
-    //CommandBuffer
     const string bufferName = "Render Camera";
+
     CommandBuffer buffer = new CommandBuffer
     {
         name = bufferName
     };
-
-    //存储剔除后的结果数据
+    //存储相机剔除后的结果
     CullingResults cullingResults;
-    public void Render(ScriptableRenderContext context,Camera camera)
+    static ShaderTagId unlitShaderTagId = new ShaderTagId("SRPDefaultUnlit");
+    /// <summary>
+    /// 相机渲染
+    /// </summary>
+    public void Render(ScriptableRenderContext context, Camera camera)
     {
         this.context = context;
         this.camera = camera;
-        
-        
-        if(!Cull())
+        //设置buffer缓冲区的名字
+        PrepareBuffer();
+        // 在Game视图绘制的几何体也绘制到Scene视图中
+        PrepareForSceneWindow();
+
+        if (!Cull())
         {
             return;
         }
-        
-        //设置mvp矩阵 matrixVP
-        Setup();
 
-        //绘制天空盒
+        Setup();
+        //绘制几何体
         DrawVisibleGeometry();
+        //绘制SRP不支持的内置shader类型
+        DrawUnsupportedShaders();
+
+        //绘制Gizmos
+        DrawGizmos();
+
+        //提交命令缓冲区
         Submit();
     }
 
-
-    static ShaderTagId unlitShaderTagId =new ShaderTagId("SRPDefaultUnlit");
-    ///<summary>
-    ///绘制几何体
-    ///</summary>
-    ///
+    /// <summary>
+    /// 绘制几何体
+    /// </summary>
     void DrawVisibleGeometry()
     {
         //设置绘制顺序和指定渲染相机
-        var sortingSetting = new SortingSettings(camera)
+        var sortingSettings = new SortingSettings(camera)
         {
             criteria = SortingCriteria.CommonOpaque
         };
-        //设置渲染的1ShaderPass 和排序顺序
-        var drawingSettings = new DrawingSettings();
-        //设置哪些类型的渲染队列可以被绘制
-        var filteringSettings=new FilteringSettings();
-        //图像绘制
-        context.DrawRenderers(
-            cullingResults, ref drawingSettings, ref filteringSettings);
+        //设置渲染的shader pass和渲染排序
+        var drawingSettings = new DrawingSettings(unlitShaderTagId, sortingSettings);
+        ////只绘制RenderQueue为opaque不透明的物体
+        var filteringSettings = new FilteringSettings(RenderQueueRange.opaque);
+        //1.绘制不透明物体
+        context.DrawRenderers(cullingResults, ref drawingSettings, ref filteringSettings);
+        
+        //2.绘制天空盒
         context.DrawSkybox(camera);
-    }
 
-    ///<summary>
-    ///提交缓冲区渲染命令
-    ///</summary>
-    ///
+        sortingSettings.criteria = SortingCriteria.CommonTransparent;
+        drawingSettings.sortingSettings = sortingSettings;
+        //只绘制RenderQueue为transparent透明的物体
+        filteringSettings.renderQueueRange = RenderQueueRange.transparent;
+        //3.绘制透明物体
+        context.DrawRenderers(cullingResults, ref drawingSettings, ref filteringSettings);
+
+    }
+    /// <summary>
+    /// 提交命令缓冲区
+    /// </summary>
     void Submit()
     {
-        buffer.EndSample(bufferName);
-        ExcuteBuffer();
+        buffer.EndSample(SampleName);
+        ExecuteBuffer();
         context.Submit();
     }
-
-    ///<summary>
-    ///设置相机的属性和矩阵
-    ///</summary>
-    ///
+    /// <summary>
+    /// 设置相机的属性和矩阵
+    /// </summary>
     void Setup()
     {
         context.SetupCameraProperties(camera);
-        buffer.ClearRenderTarget(true, true, Color.clear);
-        buffer.BeginSample(bufferName);
-        ExcuteBuffer();
+        //得到相机的clear flags
+        CameraClearFlags flags = camera.clearFlags;
+        //设置相机清除状态
+        buffer.ClearRenderTarget(flags <= CameraClearFlags.Depth, flags == CameraClearFlags.Color, 
+            flags == CameraClearFlags.Color ? camera.backgroundColor.linear : Color.clear);
+        buffer.BeginSample(SampleName);     
+        ExecuteBuffer();
         
     }
-    ///<summary>
-    ///????
-    ///</summary>
-    ///
-    void ExcuteBuffer()
+    /// <summary>
+    /// 执行缓冲区命令
+    /// </summary>
+    void ExecuteBuffer()
     {
         context.ExecuteCommandBuffer(buffer);
         buffer.Clear();
     }
-
-    ///<summary>
-    ///剔除
-    ///</summary>
-    ///
+    /// <summary>
+    /// 剔除
+    /// </summary>
+    /// <returns></returns>
     bool Cull()
     {
         ScriptableCullingParameters p;
-        if(camera.TryGetCullingParameters(out p))
+
+        if (camera.TryGetCullingParameters(out p))
         {
-            cullingResults=context.Cull(ref p);
+            cullingResults = context.Cull(ref p);
             return true;
         }
         return false;
